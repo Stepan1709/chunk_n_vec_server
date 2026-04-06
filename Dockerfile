@@ -1,18 +1,28 @@
+# Dockerfile
 FROM python:3.11-slim
 
 # Установка рабочей директории
 WORKDIR /app
 
-# Установка системных зависимостей (опционально, для некоторых функций chonkie)
+# Установка системных зависимостей, необходимых для компиляции numpy и других библиотек
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
+    curl \
+    make \
+    libffi-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Обновление pip и установка колес для ускорения сборки
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools
 
 # Копирование файла с зависимостями
 COPY requirements.txt .
 
-# Установка Python зависимостей
+# Установка numpy отдельно с явными флагами для избежания конфликтов
+RUN pip install --no-cache-dir --force-reinstall --no-binary :all: numpy==1.26.4
+
+# Установка остальных зависимостей
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Копирование кода приложения
@@ -27,7 +37,7 @@ USER appuser
 # Открытие порта
 EXPOSE 8998
 
-# Переменные окружения (могут быть переопределены при запуске)
+# Переменные окружения
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 

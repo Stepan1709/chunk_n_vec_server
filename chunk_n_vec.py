@@ -9,12 +9,12 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
-# Правильные импорты из chonkie
+# Правильные импорты из chonkie 1.x
 try:
     from chonkie import RecursiveChunker
     from chonkie.chef import MarkdownChef, TextChef
 except ImportError:
-    # Если импорт не работает, пробуем альтернативный путь
+    # Fallback для старых версий
     from chonkie.chunker import RecursiveChunker
     from chonkie.chef import MarkdownChef, TextChef
 
