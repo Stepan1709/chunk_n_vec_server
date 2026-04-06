@@ -5,7 +5,6 @@ from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 
 import httpx
-import numpy as np
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
