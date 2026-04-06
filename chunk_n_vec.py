@@ -5,10 +5,18 @@ from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 
 import httpx
+import numpy as np
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
-from chonkie import RecursiveChunker
-from chonkie.chef import MarkdownChef, TextChef
+
+# Правильные импорты из chonkie
+try:
+    from chonkie import RecursiveChunker
+    from chonkie.chef import MarkdownChef, TextChef
+except ImportError:
+    # Если импорт не работает, пробуем альтернативный путь
+    from chonkie.chunker import RecursiveChunker
+    from chonkie.chef import MarkdownChef, TextChef
 
 import config
 
