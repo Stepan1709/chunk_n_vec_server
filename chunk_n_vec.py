@@ -1,21 +1,13 @@
 import asyncio
 import logging
 import sys
+import time
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
-
-# Правильные импорты из chonkie 1.x
-try:
-    from chonkie import RecursiveChunker
-    from chonkie.chef import MarkdownChef, TextChef
-except ImportError:
-    # Fallback для старых версий
-    from chonkie.chunker import RecursiveChunker
-    from chonkie.chef import MarkdownChef, TextChef
 
 import config
 
@@ -33,9 +25,9 @@ logger = logging.getLogger(__name__)
 # Модели данных для API
 class EmbeddingRequest(BaseModel):
     text: str = Field(..., description="Текст для обработки")
-    text_format_md: bool = Field(True, description="Формат текста: true - markdown, false - plain text")
-    max_chunk_size: int = Field(4000, description="Максимальный размер чанка в символах", ge=100, le=10000)
-    chunking_strategy: str = Field("recursive", description="Стратегия чанкинга: recursive или fixed")
+    max_chunk_size: int = Field(4000, description="Максимальный размер чанка в символах (без overlap)", ge=100,
+                                le=10000)
+    overlap: int = Field(500, description="Размер перекрытия между чанками в символах", ge=0, le=2000)
 
 
 class ChunkEmbedding(BaseModel):
@@ -60,83 +52,85 @@ class HealthResponse(BaseModel):
 client: Optional[httpx.AsyncClient] = None
 
 
-def prepare_text_with_chef(text: str, text_format: str = "markdown") -> str:
+def chunk_text(text: str, max_chunk_size: int = 4000, overlap: int = 500) -> List[str]:
     """
-    Подготовка и очистка текста с помощью Chef из библиотеки chonkie
+    Разбиение текста на чанки фиксированного размера с перекрытием.
 
-    Args:
-        text: Исходный текст
-        text_format: Формат текста ("markdown" или "text")
+    Логика:
+    - Чанк 1 содержит символы [0:max_chunk_size + overlap]
+    - Чанк 2 содержит символы [max_chunk_size:2*max_chunk_size + overlap]
+    - И т.д.
 
-    Returns:
-        Очищенный текст
-    """
-    logger.info(f"Preparing text with format: {text_format}")
-
-    if text_format.lower() == "markdown":
-        chef = MarkdownChef()
-        logger.debug("Using MarkdownChef for text preparation")
-    elif text_format.lower() == "text":
-        chef = TextChef()
-        logger.debug("Using TextChef for text preparation")
-    else:
-        logger.warning(f"Unknown text format '{text_format}', falling back to text format")
-        chef = TextChef()
-
-    doc = chef.parse(text)
-    prepared_text = doc.content
-
-    logger.info(f"Text preparation completed. Original length: {len(text)}, Prepared length: {len(prepared_text)}")
-    return prepared_text
-
-
-def chunk_text(text: str, chunking_strategy: str, max_chunk_size: int) -> List[str]:
-    """
-    Разбиение текста на чанки в зависимости от выбранной стратегии
+    Каждый чанк (кроме последнего в файле) включает overlap символов из следующего чанка.
+    Если последний чанк меньше overlap символов, он не сохраняется (т.к. уже включен в предпоследний).
 
     Args:
         text: Текст для разбиения
-        chunking_strategy: Стратегия чанкинга ("recursive" или "fixed")
-        max_chunk_size: Максимальный размер чанка в символах
+        max_chunk_size: Максимальный размер чанка без overlap (по умолчанию 4000)
+        overlap: Размер перекрытия между чанками (по умолчанию 500)
 
     Returns:
         Список чанков текста
     """
-    logger.info(f"Chunking strategy: {chunking_strategy}, max_chunk_size: {max_chunk_size}")
+    logger.info(f"Chunking text with max_chunk_size={max_chunk_size}, overlap={overlap}")
+    logger.info(f"Total text length: {len(text)}")
 
-    if chunking_strategy.lower() == "recursive":
-        chunker = RecursiveChunker(chunk_size=max_chunk_size)
-        chunks = chunker(text)
-        chunk_texts = [chunk.text for chunk in chunks]
-
-        sizes = [len(chunk.text) for chunk in chunks]
-        if sizes:
-            min_size = min(sizes)
-            max_size = max(sizes)
-            avg_size = sum(sizes) / len(sizes)
-
-            logger.info(f"Recursive chunking stats - Chunks: {len(chunk_texts)}, "
-                        f"Min size: {min_size}, Max size: {max_size}, Avg size: {avg_size:.2f}")
-        else:
-            logger.warning("No chunks created")
-
-    elif chunking_strategy.lower() == "fixed":
-        # Фиксированное разбиение с перекрытием 5%
-        overlap = int(max_chunk_size * 0.05)  # 5% перекрытие
-        chunk_texts = []
-
-        for i in range(0, len(text), max_chunk_size - overlap):
-            chunk = text[i:i + max_chunk_size]
-            if chunk:  # Добавляем только непустые чанки
-                chunk_texts.append(chunk)
-
-        logger.info(f"Fixed chunking stats - Chunks: {len(chunk_texts)}, "
-                    f"Chunk size: {max_chunk_size}, Overlap: {overlap}")
-
-    else:
-        error_msg = f"Unknown chunking strategy: {chunking_strategy}"
+    if overlap >= max_chunk_size:
+        error_msg = f"Overlap ({overlap}) must be less than max_chunk_size ({max_chunk_size})"
         logger.error(error_msg)
         raise ValueError(error_msg)
+
+    chunk_size_with_overlap = max_chunk_size + overlap
+    chunk_texts = []
+
+    # Вычисляем количество чанков
+    total_length = len(text)
+
+    if total_length <= chunk_size_with_overlap:
+        # Текст помещается в один чанк
+        chunk_texts.append(text)
+        logger.info(f"Text fits in single chunk of size {total_length}")
+        return chunk_texts
+
+    # Разбиваем текст на чанки с перекрытием
+    position = 0
+    while position < total_length:
+        # Определяем конец текущего чанка
+        end_pos = min(position + chunk_size_with_overlap, total_length)
+
+        # Получаем чанк
+        chunk = text[position:end_pos]
+
+        # Проверяем, не является ли это последним маленьким чанком
+        if position + max_chunk_size >= total_length:
+            # Это последний чанк
+            if len(chunk) <= overlap:
+                # Последний чанк слишком маленький и уже включен в предпоследний
+                logger.info(f"Skipping last small chunk of size {len(chunk)} (already included in previous overlap)")
+                break
+            else:
+                # Последний чанк достаточно большой
+                chunk_texts.append(chunk)
+                logger.info(f"Added last chunk: size={len(chunk)}, range=[{position}:{end_pos}]")
+                break
+
+        chunk_texts.append(chunk)
+        logger.debug(f"Added chunk: size={len(chunk)}, range=[{position}:{end_pos}]")
+
+        # Перемещаем позицию на начало следующего чанка
+        position += max_chunk_size
+
+    # Логируем статистику
+    if chunk_texts:
+        sizes = [len(chunk) for chunk in chunk_texts]
+        min_size = min(sizes)
+        max_size = max(sizes)
+        avg_size = sum(sizes) / len(sizes)
+
+        logger.info(f"Chunking completed - Total chunks: {len(chunk_texts)}, "
+                    f"Min size: {min_size}, Max size: {max_size}, Avg size: {avg_size:.2f}")
+    else:
+        logger.warning("No chunks created")
 
     return chunk_texts
 
@@ -318,7 +312,8 @@ async def health_check():
             "server_port": config.SERVER_PORT,
             "embedding_model": config.EMBEDDING_MODEL,
             "default_max_chunk_size": 4000,
-            "default_chunking_strategy": "recursive"
+            "default_overlap": 500,
+            "chunking_strategy": "fixed_with_overlap"
         }
     )
 
@@ -332,40 +327,23 @@ async def health_check():
 async def process_text(request: EmbeddingRequest):
     """
     Основной эндпоинт для обработки текста:
-    1. Подготовка текста
-    2. Разбиение на чанки
-    3. Векторизация чанков
+    1. Разбиение на чанки с перекрытием
+    2. Векторизация чанков
     """
-    import time
-
     start_time = time.time()
 
     logger.info(f"Processing request - text_length: {len(request.text)}, "
-                f"text_format_md: {request.text_format_md}, "
                 f"max_chunk_size: {request.max_chunk_size}, "
-                f"chunking_strategy: {request.chunking_strategy}")
+                f"overlap: {request.overlap}")
 
-    # 1. Подготовка текста
-    text_format = "markdown" if request.text_format_md else "text"
-    logger.info(f"Step 1: Preparing text with format '{text_format}'")
-
-    try:
-        prepared_text = prepare_text_with_chef(request.text, text_format)
-    except Exception as e:
-        logger.error(f"Error preparing text: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Text preparation failed: {str(e)}"
-        )
-
-    # 2. Разбиение на чанки
-    logger.info("Step 2: Chunking text")
+    # 1. Разбиение на чанки
+    logger.info("Step 1: Chunking text")
 
     try:
         chunks = chunk_text(
-            prepared_text,
-            request.chunking_strategy,
-            request.max_chunk_size
+            request.text,
+            request.max_chunk_size,
+            request.overlap
         )
     except ValueError as e:
         logger.error(f"Error chunking text: {str(e)}")
@@ -387,8 +365,8 @@ async def process_text(request: EmbeddingRequest):
             detail="No chunks were created from the provided text"
         )
 
-    # 3. Векторизация чанков
-    logger.info(f"Step 3: Vectorizing {len(chunks)} chunks")
+    # 2. Векторизация чанков
+    logger.info(f"Step 2: Vectorizing {len(chunks)} chunks")
 
     try:
         results = await process_chunks_parallel(
