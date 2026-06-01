@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Копирование кода приложения
 COPY chunk_n_vec.py .
 COPY config.py .
-COPY secrets.py .
+COPY secrets_app.py .
 
 # Создание непривилегированного пользователя
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
