@@ -4,7 +4,7 @@ from typing import Optional
 # Настройки по умолчанию
 DEFAULT_VEC_URL = "http://localhost:8500"  # URL по умолчанию
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
-DEFAULT_REQUEST_TIMEOUT = 30
+DEFAULT_REQUEST_TIMEOUT = 120
 
 # Порт сервера
 SERVER_PORT = 8998

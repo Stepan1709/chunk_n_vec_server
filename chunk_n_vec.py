@@ -50,6 +50,8 @@ class HealthResponse(BaseModel):
 
 # Глобальные переменные
 client: Optional[httpx.AsyncClient] = None
+embedding_semaphore: Optional[asyncio.Semaphore] = None  # Семафор для ограничения параллельных запросов
+MAX_CONCURRENT_EMBEDDING_REQUESTS = 5  # Максимальное количество одновременных запросов к embedding сервису
 
 
 def chunk_text(text: str, max_chunk_size: int = 4000, overlap: int = 500) -> List[str]:
@@ -148,51 +150,55 @@ async def get_embedding(text: str, client: httpx.AsyncClient, url: str, model: s
     Returns:
         Вектор эмбеддинга
     """
-    try:
-        payload = {
-            "model": model,
-            "input": text
-        }
+    # Используем семафор для ограничения параллельных запросов
+    async with embedding_semaphore:
+        logger.debug(f"Acquired semaphore, processing chunk of length {len(text)}")
 
-        logger.debug(f"Sending embedding request for text of length {len(text)}")
+        try:
+            payload = {
+                "model": model,
+                "input": text
+            }
 
-        response = await client.post(
-            f"{url}/v1/embeddings",
-            json=payload,
-            timeout=config.REQUEST_TIMEOUT
-        )
-        response.raise_for_status()
+            logger.debug(f"Sending embedding request for text of length {len(text)}")
 
-        data = response.json()
-        embedding = data["data"][0]["embedding"]
+            response = await client.post(
+                f"{url}/v1/embeddings",
+                json=payload,
+                timeout=config.REQUEST_TIMEOUT
+            )
+            response.raise_for_status()
 
-        logger.debug(f"Received embedding vector of dimension {len(embedding)}")
-        return embedding
+            data = response.json()
+            embedding = data["data"][0]["embedding"]
 
-    except httpx.TimeoutException:
-        logger.error(f"Timeout while getting embedding for text: {text[:100]}...")
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="Embedding service timeout"
-        )
-    except httpx.RequestError as e:
-        logger.error(f"Request error while getting embedding: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Embedding service unavailable: {str(e)}"
-        )
-    except Exception as e:
-        logger.error(f"Unexpected error while getting embedding: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Embedding processing error: {str(e)}"
-        )
+            logger.debug(f"Received embedding vector of dimension {len(embedding)}")
+            return embedding
+
+        except httpx.TimeoutException:
+            logger.error(f"Timeout while getting embedding for text: {text[:100]}...")
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="Embedding service timeout"
+            )
+        except httpx.RequestError as e:
+            logger.error(f"Request error while getting embedding: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Embedding service unavailable: {str(e)}"
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error while getting embedding: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Embedding processing error: {str(e)}"
+            )
 
 
 async def process_chunks_parallel(chunks: List[str], client: httpx.AsyncClient,
                                   url: str, model: str) -> List[ChunkEmbedding]:
     """
-    Параллельная векторизация всех чанков
+    Параллельная векторизация всех чанков с ограничением параллелизма
 
     Args:
         chunks: Список чанков текста
@@ -203,11 +209,16 @@ async def process_chunks_parallel(chunks: List[str], client: httpx.AsyncClient,
     Returns:
         Список объектов ChunkEmbedding
     """
+    logger.info(
+        f"Starting parallel vectorization of {len(chunks)} chunks with max {MAX_CONCURRENT_EMBEDDING_REQUESTS} concurrent requests")
+
     tasks = []
-    for chunk in chunks:
+    for i, chunk in enumerate(chunks):
         task = get_embedding(chunk, client, url, model)
         tasks.append(task)
+        logger.debug(f"Created task {i + 1}/{len(chunks)} for chunk of length {len(chunk)}")
 
+    # Запускаем все задачи параллельно, но семафор ограничит количество одновременных запросов
     embeddings = await asyncio.gather(*tasks)
 
     results = []
@@ -250,7 +261,11 @@ async def check_embedding_service_health(url: str) -> bool:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
-    global client
+    global client, embedding_semaphore
+
+    # Инициализация семафора для ограничения параллельных запросов
+    embedding_semaphore = asyncio.Semaphore(MAX_CONCURRENT_EMBEDDING_REQUESTS)
+    logger.info(f"Initialized embedding semaphore with max {MAX_CONCURRENT_EMBEDDING_REQUESTS} concurrent requests")
 
     # Инициализация HTTP клиента
     logger.info("Initializing HTTP client...")
@@ -313,7 +328,8 @@ async def health_check():
             "embedding_model": config.EMBEDDING_MODEL,
             "default_max_chunk_size": 4000,
             "default_overlap": 500,
-            "chunking_strategy": "fixed_with_overlap"
+            "chunking_strategy": "fixed_with_overlap",
+            "max_concurrent_embedding_requests": MAX_CONCURRENT_EMBEDDING_REQUESTS
         }
     )
 
@@ -328,7 +344,7 @@ async def process_text(request: EmbeddingRequest):
     """
     Основной эндпоинт для обработки текста:
     1. Разбиение на чанки с перекрытием
-    2. Векторизация чанков
+    2. Векторизация чанков с ограничением параллелизма
     """
     start_time = time.time()
 
@@ -365,8 +381,9 @@ async def process_text(request: EmbeddingRequest):
             detail="No chunks were created from the provided text"
         )
 
-    # 2. Векторизация чанков
-    logger.info(f"Step 2: Vectorizing {len(chunks)} chunks")
+    # 2. Векторизация чанков с ограниченным параллелизмом
+    logger.info(
+        f"Step 2: Vectorizing {len(chunks)} chunks with max {MAX_CONCURRENT_EMBEDDING_REQUESTS} concurrent requests")
 
     try:
         results = await process_chunks_parallel(
