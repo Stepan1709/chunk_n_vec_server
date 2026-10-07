@@ -1,0 +1,9 @@
+services:
+  chunk-n-vec:
+    build: .
+    image: chunk-n-vec-server:latest
+    container_name: chunk-n-vec-server
+    env_file: .env
+    ports:
+      - "8998:8998"
+    restart: unless-stopped

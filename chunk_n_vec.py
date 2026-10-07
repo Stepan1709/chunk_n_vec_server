@@ -1,9 +1,10 @@
+"""Микросервис чанкинга текста и векторизации чанков через OpenAI-совместимый сервис эмбеддингов."""
 import asyncio
 import logging
 import sys
 import time
-from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
+from typing import Any, Dict, List, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, status
@@ -13,21 +14,20 @@ import config
 
 # Настройка логгирования
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, config.LOG_LEVEL, logging.INFO),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    stream=sys.stdout
 )
 logger = logging.getLogger(__name__)
 
 
 # Модели данных для API
 class EmbeddingRequest(BaseModel):
-    text: str = Field(..., description="Текст для обработки")
-    max_chunk_size: int = Field(4000, description="Максимальный размер чанка в символах (без overlap)", ge=100,
-                                le=10000)
-    overlap: int = Field(500, description="Размер перекрытия между чанками в символах", ge=0, le=2000)
+    text: str = Field(..., min_length=1, description="Текст для обработки")
+    max_chunk_size: int = Field(config.DEFAULT_MAX_CHUNK_SIZE,
+                                description="Максимальный размер чанка в символах (без overlap)", ge=100, le=10000)
+    overlap: int = Field(config.DEFAULT_OVERLAP,
+                         description="Размер перекрытия между чанками в символах", ge=0, le=2000)
 
 
 class ChunkEmbedding(BaseModel):
@@ -48,13 +48,14 @@ class HealthResponse(BaseModel):
     config: Dict[str, Any]
 
 
-# Глобальные переменные
+# Глобальные переменные (инициализируются в lifespan)
 client: Optional[httpx.AsyncClient] = None
-embedding_semaphore: Optional[asyncio.Semaphore] = None  # Семафор для ограничения параллельных запросов
-MAX_CONCURRENT_EMBEDDING_REQUESTS = 5  # Максимальное количество одновременных запросов к embedding сервису
+embedding_semaphore: Optional[asyncio.Semaphore] = None  # Ограничивает число параллельных запросов к embedding-сервису
+MAX_CONCURRENT_EMBEDDING_REQUESTS = config.MAX_CONCURRENT_EMBEDDING_REQUESTS
 
 
-def chunk_text(text: str, max_chunk_size: int = 4000, overlap: int = 500) -> List[str]:
+def chunk_text(text: str, max_chunk_size: int = config.DEFAULT_MAX_CHUNK_SIZE,
+               overlap: int = config.DEFAULT_OVERLAP) -> List[str]:
     """
     Разбиение текста на чанки фиксированного размера с перекрытием.
 
@@ -68,8 +69,8 @@ def chunk_text(text: str, max_chunk_size: int = 4000, overlap: int = 500) -> Lis
 
     Args:
         text: Текст для разбиения
-        max_chunk_size: Максимальный размер чанка без overlap (по умолчанию 4000)
-        overlap: Размер перекрытия между чанками (по умолчанию 500)
+        max_chunk_size: Максимальный размер чанка без overlap
+        overlap: Размер перекрытия между чанками
 
     Returns:
         Список чанков текста
@@ -305,10 +306,17 @@ async def root():
         "description": "Processes text into chunks and generates embeddings",
         "endpoints": {
             "/": "Service information",
+            "/live": "Liveness probe (does not check dependencies)",
             "/health": "Health check with embedding service status",
             "/process": "Process text into chunks with embeddings"
         }
     }
+
+
+@app.get("/live")
+async def liveness():
+    """Проверка того, что процесс жив (без обращения к внешним сервисам)"""
+    return {"status": "alive"}
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -326,8 +334,8 @@ async def health_check():
         config={
             "server_port": config.SERVER_PORT,
             "embedding_model": config.EMBEDDING_MODEL,
-            "default_max_chunk_size": 4000,
-            "default_overlap": 500,
+            "default_max_chunk_size": config.DEFAULT_MAX_CHUNK_SIZE,
+            "default_overlap": config.DEFAULT_OVERLAP,
             "chunking_strategy": "fixed_with_overlap",
             "max_concurrent_embedding_requests": MAX_CONCURRENT_EMBEDDING_REQUESTS
         }
@@ -421,6 +429,6 @@ if __name__ == "__main__":
         app,
         host=config.SERVER_HOST,
         port=config.SERVER_PORT,
-        log_level="info",
+        log_level=config.LOG_LEVEL.lower(),
         access_log=True
     )

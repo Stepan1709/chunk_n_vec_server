@@ -1,43 +1,15 @@
-import logging
-from typing import Optional
+"""Конфигурация сервиса. Все параметры задаются переменными окружения."""
+import os
 
-# Настройки по умолчанию
-DEFAULT_VEC_URL = "http://localhost:8500"  # URL по умолчанию
-DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
-DEFAULT_REQUEST_TIMEOUT = 120
+VEC_URL = os.getenv("VEC_URL", "http://localhost:8500").rstrip("/")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "120"))
+MAX_CONCURRENT_EMBEDDING_REQUESTS = int(os.getenv("MAX_CONCURRENT_EMBEDDING_REQUESTS", "5"))
 
-# Порт сервера
-SERVER_PORT = 8998
-SERVER_HOST = "0.0.0.0"
+SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
+SERVER_PORT = int(os.getenv("SERVER_PORT", "8998"))
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
-# Пытаемся импортировать из secrets_app.py
-try:
-    from secrets_app import (
-        VEC_URL as SECRETS_VEC_URL,
-        EMBEDDING_MODEL as SECRETS_EMBEDDING_MODEL,
-        REQUEST_TIMEOUT as SECRETS_REQUEST_TIMEOUT
-    )
-
-    # Используем значения из secrets_app.py если они есть
-    VEC_URL = SECRETS_VEC_URL
-    EMBEDDING_MODEL = SECRETS_EMBEDDING_MODEL
-    REQUEST_TIMEOUT = SECRETS_REQUEST_TIMEOUT
-
-    logging.info("Loaded configuration from secrets_app.py")
-
-except ImportError:
-    # Используем значения по умолчанию
-    VEC_URL = DEFAULT_VEC_URL
-    EMBEDDING_MODEL = DEFAULT_EMBEDDING_MODEL
-    REQUEST_TIMEOUT = DEFAULT_REQUEST_TIMEOUT
-
-    logging.warning("secrets_app.py not found, using default configuration")
-except AttributeError as e:
-    # Если в secrets_app.py не все переменные определены
-    VEC_URL = getattr(__import__('secrets', fromlist=['VEC_URL']), 'VEC_URL', DEFAULT_VEC_URL)
-    EMBEDDING_MODEL = getattr(__import__('secrets', fromlist=['EMBEDDING_MODEL']), 'EMBEDDING_MODEL',
-                              DEFAULT_EMBEDDING_MODEL)
-    REQUEST_TIMEOUT = getattr(__import__('secrets', fromlist=['REQUEST_TIMEOUT']), 'REQUEST_TIMEOUT',
-                              DEFAULT_REQUEST_TIMEOUT)
-
-    logging.warning("Some variables missing in secrets_app.py, using defaults for missing ones")
+# Значения по умолчанию для параметров чанкинга
+DEFAULT_MAX_CHUNK_SIZE = 4000
+DEFAULT_OVERLAP = 500

@@ -1,32 +1,26 @@
-# Dockerfile
 FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-# Установка только необходимых системных зависимостей
-RUN apt-get update && apt-get install -y \
-    curl \
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Копирование requirements.txt отдельно для кэширования слоя
 COPY requirements.txt .
+RUN pip install -r requirements.txt
 
-# Установка зависимостей в один слой для уменьшения размера
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+COPY config.py chunk_n_vec.py ./
 
-# Копирование кода приложения
-COPY chunk_n_vec.py .
-COPY config.py .
-COPY secrets_app.py .
-
-# Создание непривилегированного пользователя
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8998
 
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
+# /live не зависит от внешних сервисов, поэтому контейнер не помечается unhealthy из-за недоступной модели
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -fs http://localhost:8998/live || exit 1
 
-CMD ["python", "-m", "uvicorn", "chunk_n_vec:app", "--host", "0.0.0.0", "--port", "8998", "--log-level", "info"]
+CMD ["python", "chunk_n_vec.py"]
