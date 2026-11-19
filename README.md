@@ -58,7 +58,7 @@ docker run -d --name chunk-n-vec-server -p 8998:8998 --env-file .env --restart u
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 export VEC_URL=http://<host>:8500                   # Windows PowerShell: $env:VEC_URL="..."
-python chunk_n_vec.py
+python -m app
 ```
 
 ## API
@@ -99,4 +99,31 @@ curl -X POST http://localhost:8998/process \
 ```
 
 Коды ошибок: `400` — некорректные параметры чанкинга, `503` / `504` — сервис эмбеддингов недоступен / не ответил
-вовремя, `500` — прочие ошибки.
+вовремя, `502` — сервис эмбеддингов вернул ошибку или некорректный ответ, `500` — прочие ошибки.
+
+## Структура проекта
+
+```
+app/
+├── main.py            # сборка приложения и lifespan (создание HTTP-клиента)
+├── __main__.py        # запуск: python -m app
+├── core/              # конфигурация, логирование, исключения
+├── api/
+│   ├── deps.py        # зависимости FastAPI
+│   └── routers/       # HTTP-эндпоинты (health, process)
+├── schemas/           # pydantic-схемы запросов и ответов
+├── services/          # бизнес-логика: чанкинг и векторизация
+└── clients/           # клиент сервиса эмбеддингов
+tests/                 # pytest
+```
+
+## Разработка
+
+```bash
+pip install -r requirements-dev.txt
+pre-commit install          # ruff и mypy перед каждым коммитом
+ruff check . && ruff format --check . && mypy app
+pytest
+```
+
+Те же проверки запускаются в GitHub Actions (`.github/workflows/ci.yml`).
